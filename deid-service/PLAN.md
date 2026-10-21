@@ -1,259 +1,329 @@
-# Enterprise Data De-identification Service: Merged Build Plan
+# Enterprise Data De-identification Service: Build Plan
 
-Version 2, October 2026. Merges the internal plan (v1) with the external roadmap
-reviewed on 2026-10-21, plus the gaps that neither covered.
+Version 3, October 2026. Incorporates the architecture review of 2026-10-21.
+Change log at the end.
 
 ## 0. What the service is
 
 A privacy-first processing service that securely ingests enterprise data through
 connectors or file imports, discovers and classifies sensitive information,
-de-identifies it under versioned policy, verifies the whole dataset, and exports
-approved output together with independently verifiable evidence.
+de-identifies it under versioned policy, validates the released dataset, and
+exports approved output together with independently verifiable evidence.
 
-Two outputs per run: a usable de-identified dataset and a signed processing
+Two outputs per release: a usable de-identified dataset and a signed processing
 assurance report.
 
-The differentiator is provable integrity and privacy assurance, not PII detection.
+The differentiator is defensible assurance: completeness, authorisation, measured
+privacy risk, and non-retention within an audited boundary. Not PII detection.
 
-Deliberately excluded: model training, HIPAA specialisation, data marketplace,
-general analytics or BI, data cataloguing, MDM, general ETL. Raw customer data is
-never collected for debugging or for improving detectors unless a customer
-separately authorises it in writing.
+Excluded: model training, HIPAA specialisation, marketplace, analytics or BI,
+cataloguing, MDM, general ETL. Raw customer data is never collected for debugging
+or detector improvement without separate written authorisation.
 
-## 1. What we promise, precisely
+## 1. Four separate assurances, stated precisely
 
-These qualifications go into contracts, marketing, and acceptance criteria.
+We make four distinct promises. They are never collapsed into one, in contracts,
+marketing, or the manifest.
 
-**No data stored** means no persistent raw customer data in infrastructure we
-operate. Source systems and export destinations necessarily retain data. A
-customer-controlled processing environment may use encrypted temporary storage,
-and that is the customer's storage.
+| Assurance | What it establishes | What it does not establish |
+|---|---|---|
+| Schema coverage | Every discovered field, including nested fields, received a policy decision | That every value inside a field was detected |
+| Processing completeness | Every record in the defined source snapshot has a documented disposition, with duplicate and loss detection | Anything about detection quality |
+| Detection effectiveness | Measured precision and recall per identifier type on labelled and adversarial sets, with quantified uncertainty | Perfect detection in arbitrary text |
+| Non-retention | No unauthorised raw-data persistence was observed within the audited processing boundary, under documented infrastructure controls and verification tests | That nothing was ever stored anywhere, unqualified |
 
-**No data missed** means complete record accounting for a defined source snapshot:
-every input row has a recorded disposition (exported, suppressed, excluded by
-opt-out, errored). It does not mean every identifying detail in arbitrary free
-text is guaranteed detected. Detection quality is measured and reported per
-identifier type, never claimed as absolute.
+And one gate that is legal rather than technical:
+
+| Authorisation | Source provenance, claimed rights, permitted purpose, and permitted recipients were recorded and checked before release |
+
+De-identified is not the same as anonymous, legally distributable, or free of
+confidential business information. Each is assessed separately.
 
 ## 2. Customer workflow
 
-1. Connect or import: databases, warehouses, SaaS, object storage, files.
-2. Discover and classify: schema, PII, confidential fields, processing permissions.
-3. De-identify: policy-driven suppression, masking, generalisation, tokenisation.
-4. Verify and govern: completeness, privacy risk, utility, integrity, non-retention.
-5. Release: licensing and purpose check, then export to customer storage plus the
-   assurance report. The release fails closed if any gate is unresolved.
+1. Connect or import, with scoped read-only access.
+2. Pass 1, discovery and planning: classify, profile, compute dataset-level risk
+   statistics, generate the transformation policy, obtain approvals.
+3. Pass 2, partitioned transformation against the same source snapshot.
+4. Global validation: completeness, independent privacy assessment, utility,
+   integrity, authorisation, non-retention evidence.
+5. Atomic release: the dataset becomes visible only when every gate passes;
+   otherwise it is quarantined in customer-controlled storage.
 
-## 3. Five non-negotiable capabilities
-
-| Capability | Delivery |
-|---|---|
-| Secure ingestion | Connectors and imports with scoped, read-only access |
-| High-quality de-identification | Structured and free-text detection, configurable transforms, risk assessment, utility report |
-| Data completeness | Every record in the snapshot accounted for, including errors and exclusions |
-| Zero vendor-side raw retention | Enforced by infrastructure, evidenced from the customer's own logs |
-| Privacy and governance | Policies, authorisation, lineage, release controls, auditability, licensing validation |
-
-## 4. Architecture
+## 3. Architecture
 
 Control plane and data plane are separated. The control plane is hosted by us and
-stores no record values: tenants, connector references, policies, jobs, approvals,
-manifests, audit metadata, key references. The data plane is a portable container
-that runs either in our isolated environment or, as the high-assurance default,
-inside the customer's own cloud account.
+stores no record values. The data plane is a portable, headless service with a CLI
+that runs in our isolated environment or, as the enterprise default, inside the
+customer's own cloud account. Core transformations are identical in both.
 
 ```
- Sources                     Data plane worker (ephemeral, portable container)          Sinks
- Postgres/MySQL  ─┐          ┌────────┐  ┌──────────┐  ┌───────────┐  ┌───────────┐     ┌─ customer object storage
- Snowflake/BQ    ─┤ read-only│ Ingest │─▶│ Classify │─▶│ Transform │─▶│ Gates     │─────┤  customer warehouse
- S3/GCS/Azure    ─┼─────────▶│ Arrow  │  │ schema + │  │ policy    │  │ A B C D   │     └─ authenticated download
- CSV/Parquet/JSON─┘ batches  │ stream │  │ content  │  │ engine    │  │ fail-closed│
-                             └────────┘  └──────────┘  └───────────┘  └─────┬─────┘
-                                                                           ▼
-                                           signed manifest + utility report + audit chain
-                                                                           ▼
- Control plane (ours, no record data): tenants, policies, jobs, approvals, manifests,
- delivery registry, key references (KMS), licensing rules.
+                 ┌──────────────── Pass 1: discovery and planning ────────────────┐
+ Source snapshot │ classify (multi-dim) → profile → global risk stats → policy →   │
+ (consistent)    │ approvals                                                      │
+       │         └──────────────────────────────┬───────────────────────────────┘
+       │                                        ▼
+       │         ┌──────────────── Pass 2: partitioned transformation ────────────┐
+       ├────────▶│ Arrow batches (adaptive size) → transform → per-partition       │
+       │         │ disposition ledger + commitments → quarantine storage (customer)│
+       │         └──────────────────────────────┬───────────────────────────────┘
+       │                                        ▼
+       │         ┌──────────────── Global validation and release ─────────────────┐
+       └ changed?│ snapshot unchanged? → completeness → independent privacy engine │
+         abort   │ → utility → authorisation → non-retention evidence → atomic     │
+                 │ publish or quarantine                                           │
+                 └────────────────────────────────────────────────────────────────┘
+ Control plane (ours, no record data): tenants, policies, jobs, approvals,
+ manifests, delivery registry, key references, licensing rules.
 ```
 
 ### Design rules
-- Raw data lives only in memory inside a worker and is gone when the worker ends.
-- Every column must be classified; unclassified is a hard failure.
+- Raw data lives only in worker memory and customer-controlled quarantine storage.
+  Quarantined intermediate output is pseudonymised personal data and is protected
+  as such, never assumed safe because a transform ran.
+- The source snapshot must be consistent: database snapshot isolation, immutable
+  object versions, or a connector-defined extraction boundary. Both passes read the
+  same snapshot. If it changes between passes, the job aborts.
 - Policies are versioned YAML; the policy hash is in every manifest.
-- Processing is chunked and partitioned from day one. Each partition is an
-  idempotent unit of work with its own reconciliation row. Retries overwrite,
-  never double-count.
-- The data plane is cloud-agnostic: a container image with thin abstractions for
-  queue, object storage, secrets, and KMS. Cloud-specific orchestration
-  (Step Functions, Fargate, SQS) is used only in our hosted environment.
+- Partitions are idempotent units with their own disposition ledger. Retries
+  overwrite; duplicates are detected, not just counted.
+- Batch size adapts to a memory budget, not a fixed row count.
+- The data plane is cloud-agnostic. Cloud-specific orchestration stays in our
+  hosted environment behind thin abstractions.
+- Hosted file imports land in a short-lived ingest bucket with enforced lifecycle
+  deletion, and that bucket is inside the audited boundary and disclosed as such.
 
 ### Deployment models
 
 | Model | Advantage | Trade-off |
 |---|---|---|
-| Vendor-hosted isolated workers | Easy onboarding, file-import MVP | Harder to prove zero retention |
-| Customer cloud or VPC processing (default for enterprise) | Data sovereignty, retention evidence from customer logs | More deployment and support work |
-| Confidential computing (later) | Hardware runtime attestation | Operational complexity; does not by itself prove the rest of the pipeline retained nothing |
+| Vendor-hosted isolated workers | Easy onboarding for file imports | Non-retention boundary is ours to prove |
+| Customer cloud or VPC (enterprise default) | Sovereignty; evidence from customer logs | Deployment and support effort |
+| Confidential computing (later) | Runtime attestation | Does not cover the rest of the pipeline |
 
 ### Stack
 
 | Layer | Choice | Note |
 |---|---|---|
-| CLI and API | Python, FastAPI | Web UI deferred until the evidence format is stable |
-| Metadata and governance | PostgreSQL | No record values, ever |
-| Connectors | Pluggable Python connector SDK | Contract: snapshot, partition, read batches, checkpoint |
-| Processing | PyArrow + Polars | Columnar, bounded memory |
-| Detection | Presidio + custom recognisers; cloud DLP as optional backend | Throughput budget required, see 6.3 |
-| Execution (hosted) | ECS/Fargate + SQS + Step Functions | Behind the portable abstraction |
-| Execution (customer cloud) | Same container, customer's scheduler or our Terraform module | |
-| Secrets and keys | Secrets Manager / Vault + KMS | Per-tenant, per-purpose keys |
+| Data plane | Python, PyArrow, Polars; headless service plus CLI | Typed interfaces; engine separate from orchestration |
+| Control plane | Python, FastAPI, PostgreSQL | No record values |
+| Connectors | Python connector SDK | Contract: snapshot, partition, read batches, checkpoint |
+| Transformation detection | Presidio plus custom recognisers | Throughput budget required |
+| Assurance detection | Independent rule set and, where warranted, independently trained models | Must not share false negatives with the above |
+| Hosted execution | ECS/Fargate, SQS, Step Functions | Behind abstractions |
+| Customer execution | Same container via Terraform module or customer scheduler | |
+| Secrets and keys | Secrets Manager or Vault plus KMS | Per tenant, per purpose |
 | Evidence | Signed manifests, hash-chained audit log, customer cloud activity logs | |
-| Web app (later) | Next.js + TypeScript | Phase 5 or later |
+| Web UI | Next.js, later | After evidence format stabilises |
 
-Not in the initial build: Kafka, Kubernetes, Spark. Revisit only on benchmarks.
+Not initially: Kafka, Kubernetes, Spark. Revisit only if load tests show distributed
+execution beats isolated parallel workers.
 
-## 5. Classification
+## 4. Classification
 
-Three layers, all recorded in the manifest:
-1. Schema catalogue: name and type heuristics (email, phone, national ID, name,
-   DOB, address, IP, device ID, account number, geo).
-2. Content sampling: regex plus validators (Luhn, email syntax, E.164, IP) over a
-   sample of each column. Disagreement with layer 1 is flagged.
-3. Free text: NER producing spans with entity types.
+Multidimensional, not five mutually exclusive buckets. Each field, nested path,
+array element type, and file metadata attribute carries:
 
-Every column lands in exactly one of
-`direct_identifier | quasi_identifier | sensitive | free_text | non_identifying`
-with a confidence. Low confidence blocks the run until a named operator approves
-the mapping; the approval is in the manifest.
+| Dimension | Values |
+|---|---|
+| Structure | scalar, structured object, array, free text, binary, embedded document |
+| Personal information | none, direct identifier, quasi-identifier, sensitive personal information |
+| Business sensitivity | public, internal, confidential, proprietary, trade secret |
+| Permission | authorised for transformation, permitted for onward distribution, prohibited |
+| Required action | remove, tokenize, generalize, retain, quarantine for review |
 
-## 6. De-identification engine
+Three detection layers feed this: schema heuristics, content sampling with
+validators, and NER plus confidential-information patterns (credentials, keys,
+pricing, roadmap language) for free text. Schema changes between snapshot and
+processing abort the run. Low-confidence fields block until a named operator
+approves; approval is recorded.
 
-### 6.1 Transform actions
+A fully anonymous record that contains unpublished acquisition plans still fails
+the business-sensitivity and permission dimensions.
 
-| Action | Use for | Notes |
+## 5. Transformation engine
+
+| Action | Use | Rules |
 |---|---|---|
 | suppress | national IDs, exact address, raw names | Drop or null |
-| pseudonymize | join keys, emails | HMAC-SHA256, per-tenant per-purpose key, one-way |
-| tokenize (FPE) | account numbers that must keep format | FF3-1 |
-| generalize | ZIP to ZIP3, age to bands, city to region | Hierarchies in policy |
-| date_shift | timestamps | Consistent per-entity shift, intervals preserved |
-| bucket / round | income, counts | Configurable bins |
-| perturb | numeric measures | Laplace noise, optional DP budget |
-| redact_text | notes, tickets | Spans replaced with typed placeholders |
-| keep | non-identifying | Must be explicit |
+| pseudonymize | join keys, emails | HMAC-SHA256, per-tenant per-purpose key, one-way. Output is labelled pseudonymised personal data, never anonymous |
+| tokenize (format-preserving) | only where a real format requirement exists | No default algorithm. FF3-1 is not adopted: NIST's 2025 draft of SP 800-38G rev 1 removed the FF3 family. Use a reviewed construction, case by case |
+| generalize | ZIP to ZIP3, age bands, region | Hierarchies in policy |
+| date_shift | timestamps | Per-entity shift; flagged as quasi-identifier because distinctive sequences survive; assessed in the privacy engine |
+| bucket / round | income, counts | Configurable |
+| redact_text | notes, tickets | Typed placeholders |
+| keep | non-identifying, authorised | Explicit |
 
-### 6.2 Key management and reversibility
-- One-way pseudonymisation is the default. No re-identification vault in v1: it is
-  the single hardest thing to prove we do not retain.
-- Keys are per tenant and per purpose, held in KMS separately from data (GDPR
-  Art. 4(5) pseudonymisation requires separate holding). Rotation supported with
-  key version recorded in the manifest.
-- Cross-dataset consistency (same person, same token across sources or deliveries)
-  is a per-contract, per-buyer policy decision, never a default. Salts are scoped
-  to a contract so tokens from different buyers cannot be joined.
+Removed from v1: generic `perturb` with Laplace noise. Differential privacy needs a
+privacy unit, contribution bounds, a release mechanism, and cumulative accounting.
+It returns only as a separately specified mechanism with a validated use case.
+Removed: salted hashes as a protection in themselves; all keyed transforms are
+purpose-limited keyed constructions.
 
-### 6.3 Free-text throughput budget
-NER is the bottleneck, not columnar transforms. Phase 1 establishes a per-record
-latency budget, batched inference, model-size options, and a cost per million
-text records before any 10M target is claimed.
+### Key management
+- One-way by default. No re-identification vault without a demonstrated requirement.
+- Keys per tenant and per purpose, held in KMS separately from data, rotated, with
+  key version in the manifest.
+- Cross-dataset or cross-delivery token consistency is a per-contract decision.
+  Keys are scoped to a contract so tokens from different recipients cannot be joined.
+- True anonymisation is a separate, rigorously assessed output mode, not a label
+  applied to pseudonymised output.
 
-## 7. Enterprise assurance subsystem
+### Free-text throughput budget
+NER is the bottleneck. Phase 1 sets a per-record latency budget, batched inference,
+model-size options, and cost per million text records before any scale target is
+claimed. Test tabular-only, text-heavy, and mixed workloads separately.
 
-A separate subsystem with four independent gates. Any unresolved gate fails the
-export closed.
+## 6. Assurance subsystem
 
-**Gate A, input completeness.** Source snapshot descriptor, file inventory,
-partition counts, schema manifest, connector checkpoints, rolling content hash of
-the input computed while streaming.
+Separate from the transformation engine, with its own rules and models, benchmarked
+on labelled records containing real sensitive-data patterns. Any unresolved gate
+fails the release closed.
 
-**Gate B, transformation integrity.** Per partition:
-`rows_in = rows_exported + rows_suppressed + rows_optout + rows_errored`.
-Schema preservation, controlled suppression, idempotency, output content hash.
+**Gate A, source snapshot and input completeness.** Consistent snapshot descriptor,
+file inventory with object versions, partition counts, schema manifest, connector
+checkpoints, rolling input hash. Snapshot drift aborts.
 
-**Gate C, privacy assurance.** Independent residual-identifier scan on the output
-using the same detectors as classification (zero hits required), k-anonymity on
-quasi-identifiers (default k >= 5, per contract), l-diversity on sensitive
-columns, linkage-risk score, measured detector precision and recall per identifier
-type on validated test sets.
+**Gate B, record-level integrity.** Not count equality alone. Each partition keeps
+a disposition ledger: every source record has exactly one outcome (exported,
+suppressed, excluded by suppression policy, errored), with duplicate and loss
+detection via keyed row commitments. Only commitment roots and counts leave the
+worker, so the ledger cannot itself leak identifiers. Partition manifests bind to
+the published objects by checksum. Referential integrity across related tables is
+checked where declared. Publication is atomic.
 
-**Gate D, non-retention evidence.** Enforced, not asserted:
-- worker IAM role can write only to the export prefix and the evidence prefix
-- read-only root filesystem, no persistent volumes, encrypted ephemeral temp
-- egress restricted to source and sink endpoints
-- worker lifecycle logged; temp cleanup verified at exit
-- evidence is the customer's own cloud activity log (CloudTrail or equivalent),
-  cross-referenced in the manifest, so the customer verifies it without trusting us.
+**Gate C, release-specific privacy assessment.** Chosen per output type and
+recipient, considering external information and prior deliveries:
 
-**Utility report** (new): per export, column retention, generalisation levels,
-null-rate change, and distribution drift versus source for declared analytic columns.
-
-**Run manifest** (JSON, signed with the tenant key): source descriptor and hash,
-policy ID, version and hash, classification table, per-column action, per-partition
-reconciliation, gate results, utility report, output descriptor and hash, worker
-identity, paths written, approvals with identity and time, key versions used.
-
-**Audit log**: hash-chained entries containing counts, hashes, and actions only.
-
-**Delivery registry** (new): which pseudonym hashes went to which recipient under
-which contract. Holds no raw values. Required so that a deletion request after
-export can be propagated to recipients.
-
-## 8. Regulatory and contractual framework
-
-| Framework | What the platform accounts for |
+| Output | Validation |
 |---|---|
-| CCPA/CPRA | De-identified-information requirements (public commitment, contractual restrictions on re-identification), consumer rights, disclosures |
-| California Delete Act | Honour DROP deletion lists at ingest (matching rows dropped and counted, never exported) and propagate to recipients via the delivery registry. Registration applicability depends on actual activity, confirm with counsel |
-| Other US state laws | Texas, Oregon, Vermont broker registries; varying sensitive-data and consent rules via policy packs |
-| GDPR / UK GDPR | Pseudonymisation with separate keys, anonymisation assessment, DPIA template, Art. 30 records generated from manifests, transfer analysis. Track the EDPB anonymisation guidance; verify its status before citing it to customers |
-| NIST SP 800-188, ISO/IEC 27559 | Disclosure-risk-based assessment as the method; 27559 as the control checklist |
-| NIST Privacy Framework, SOC 2 | Organisational controls, auditable processing integrity |
-| Customer contracts | Source ownership, permitted uses, sublicensing, provenance, redistribution limits |
+| Structured, direct identifiers removed | Independent identifier scan, quasi-identifier risk, linkage analysis |
+| Pseudonymised relational | Token isolation, key scope, joinability |
+| Free text | Independent residual PII and confidential-information detection |
+| Aggregates | Small-cell suppression, disclosure risk |
+| Repeated exports | Cross-release linkage, cumulative disclosure |
 
-Licensing validation is a release gate: de-identifying data does not create the
-right to license it. Source permission and intended downstream use are checked
-before export.
+k-anonymity and l-diversity are applied where their assumptions hold, with
+thresholds per release, never as a universal gate. Detector effectiveness is
+reported with uncertainty. The engine also flags transforms that preserved more
+information than policy intended.
 
-Two external facts to verify with counsel before repeating to customers: the DROP
-processing start date and the EDPB draft anonymisation guidelines' status.
+**Gate D, non-retention within the audited boundary.** Enforced at infrastructure
+level and evidenced independently of the worker:
+- workload identity; write permission only to quarantine, export, and evidence prefixes
+- egress restricted to source and sink endpoints
+- read-only root filesystem, no persistent volumes, encrypted ephemeral buffers,
+  swap and core dumps disabled
+- application logging and telemetry scrubbed by schema: structured logs with
+  allow-listed fields only; connector debug and retry caches disabled
+- failed multipart uploads cleaned by lifecycle rule; quarantine lifecycle enforced
+- periodic control tests that attempt each leakage path and record the result
+- evidence cross-referenced to the customer's own cloud activity logs
 
-## 9. Roadmap
+The certificate states: no unauthorised raw-data persistence was observed within
+the audited processing boundary, under the documented controls and verification
+tests. Nothing stronger.
 
-Each phase ends with an independently testable deliverable.
+**Gate E, authorisation.** Provider identity, claimed rights to process, intended
+purpose, permitted recipients, redistribution restrictions, and the CPRA
+de-identification obligations (reasonable safeguards, public commitment against
+re-identification, contractual restrictions on recipients) are recorded and
+checked before release.
 
-| Phase | Focus | Exit criterion |
+**Utility report.** Column retention, generalisation levels, null-rate change, and
+distribution drift versus source for declared analytic columns.
+
+**Evidence schema.** The manifest and audit chain contain counts, commitment roots,
+policy and key versions, gate results, identities, and timestamps. They never
+contain raw values or unkeyed hashes of identifiers, which would themselves be
+re-identifiable. The delivery registry maps keyed tokens to recipients and
+contracts under a separate key and access policy, so deletions can be propagated
+without the registry becoming a linkage oracle.
+
+## 7. Regulatory and contractual framework
+
+| Framework | Platform behaviour | Narrowed claim |
 |---|---|---|
-| 0. Specification and threat model | Data types, workflows, deployment boundary, regulatory applicability, prohibited retention, exact promises from section 1 | Approved spec and threat model |
-| 1. Core engine | CSV, JSONL, Parquet; classification layers 1 to 3; transform library; policy loader; chunked idempotent partition contract; NER throughput budget | Correct output on labelled datasets; measured throughput |
-| 2. Assurance | Gates A to D, signed manifests, audit chain, utility report, fail-closed release, licensing check | Reproducible evidence; a verifier tool a customer can run |
-| 3. Scale | Worker queue, autoscaling, checkpoints, retries, bounded memory | 1M then 10M records with full accounting |
-| 4. Connectors and exports | PostgreSQL, S3, then prioritised systems; opt-out list ingest; delivery registry | End-to-end with source-scope reconciliation |
-| 5. Hardening | Tenant isolation, customer-cloud Terraform module, RBAC, security testing, monitoring, web UI | Security-reviewed, operationally ready |
-| 6. Pilot | Real customer data in customer cloud, independent privacy and performance review | Pilot acceptance against contractual criteria |
+| CCPA/CPRA | De-identification obligations as Gate E items | Compliance is the customer's; we supply evidence |
+| California Delete Act and DROP | Generic suppression-policy interface first. The official DROP workflow, with its recurring 45-day cycle, standardisation and hashing procedures, and outcome reporting, is a separately scoped capability built only once the covered entity is confirmed | Row exclusion alone does not satisfy DROP |
+| Other US state laws | Policy packs; Texas, Oregon, Vermont registries | Applicability confirmed with counsel |
+| GDPR / UK GDPR | Pseudonymisation with separate keys; anonymisation as a distinct assessed mode; DPIA template; Art. 30 export from manifests | Pseudonymised data remains personal data; manifests support but do not constitute Art. 30 records; the DPIA template is an aid, not a completed assessment |
+| EDPB Guidelines 02/2026 on anonymisation | Inform the privacy engine | In consultation; not final |
+| NIST SP 800-188 | Disclosure-risk method | |
+| ISO/IEC 27559 | Control checklist | Not a certification |
+| NIST Privacy Framework, SOC 2 | Organisational controls | |
+| Sector and contract | Financial, employment, education, consumer, and proprietary data carry their own restrictions, captured in Gate E | Excluding HIPAA removes one regime, not all |
 
-Phases 0 to 3 come before a broad connector catalogue.
+## 8. Roadmap
 
-## 10. Acceptance criteria for the first enterprise release
+| Phase | Scope | Exit criterion |
+|---|---|---|
+| 0. Threat model and contracts | The four assurances and their limits, processing boundary, retention model incl. logs, telemetry, swap, egress, third-party SDKs; source licensing; data-plane interfaces | Reviewed architecture and threat model |
+| 1. Secure reference pipeline | Headless data-plane service plus CLI; file imports; multi-dim classification; policies; transforms; two-pass model on a snapshot abstraction; disposition ledger; signed manifests; NER throughput budget | Complete processing and testable evidence on synthetic data |
+| 2. Independent assurance | Independent privacy engine; Gates A to E; non-retention controls and control tests; global release gate; negative-path tests | Demonstrably fails closed on missing records, detector blind spots, unauthorised exports, infrastructure failures |
+| 3. Scale and connectors | Adaptive batching; resumable jobs; PostgreSQL and S3; parallel workers | 1M then 10M records with bounded memory, recovery, full accounting, on tabular, text-heavy and mixed sets |
+| 4. Enterprise deployment | Customer-VPC module; RBAC; audit operations; hardening; retention controls | Enterprise security review |
+| 5. Extended | More connectors; DROP workflow if applicable; advanced privacy methods; Spark if justified by benchmarks | Demand-driven |
+| 6. Pilot | Real data in customer cloud; independent review | Pilot acceptance |
+
+## 9. Acceptance criteria for the first enterprise release
 
 | Area | Criterion |
 |---|---|
-| Scale | 10M records across structured and text-heavy datasets, bounded memory |
-| Completeness | 100% of snapshot records reconciled per Gate B |
-| Retention | No vendor-side persistent raw data in the tested deployment, evidenced from customer logs |
-| Detection | Per-identifier precision and recall thresholds set on validated test data, reported per run |
-| Utility | Utility report delivered with every export |
-| Reliability | Checkpoint recovery, idempotent retries, no silent partition failure |
-| Governance | Every export carries verifiable policy, lineage, gate, licensing and execution evidence |
-| Security | Isolation, least privilege, credential protection, deletion tests, release authorisation |
+| Scale | 10M records, three workload types, bounded memory |
+| Completeness | Every snapshot record has one disposition; duplicate and loss tests pass |
+| Retention | No unauthorised persistence observed within the audited boundary; control tests pass; customer-log cross-reference verified |
+| Detection | Per-identifier precision and recall with uncertainty, reported per release |
+| Privacy | Release-specific assessment performed and recorded for every export |
+| Authorisation | Gate E evidence present for every export |
+| Utility | Utility report per export |
+| Reliability | Checkpoint recovery, idempotent retries, no silent partition failure, snapshot drift aborts |
+| Negative paths | Missing records, detector blind spots, unauthorised exports, and infrastructure failures cannot pass silently |
 
-These are targets to be established on representative data, not claims.
+Targets to be established on representative data, not claims.
+
+## 10. Decisions
+
+| Decision | Resolution |
+|---|---|
+| Runtime | Python plus Arrow; typed interfaces; engine separate from orchestration; benchmark before Spark |
+| Reversibility | One-way, purpose-scoped keyed pseudonymisation; no vault; anonymisation a separate assessed mode |
+| Deletion lists | Generic suppression-policy interface first; DROP workflow later if the business is a covered broker |
+| Repository | New, isolated repository with its own security controls and dependency governance |
+| Execution environment | Vendor-managed control plane; customer-controlled data plane from the outset; identical core engine in both |
 
 ## 11. Next deliverables
 
-1. Phase 0 system specification and threat model, with section 1 promises as
-   acceptance criteria.
-2. De-identification specification: detectors, transforms, risk scoring, utility.
-3. Assurance specification: exactly how each gate produces evidence without
-   retaining raw data, and the customer-run verifier.
-4. Connector SDK contract.
-5. Build backlog and validation suite: labelled test datasets, load tests, release gates.
+1. Phase 0 specification and threat model.
+2. De-identification specification: detectors, transforms, key ownership and rotation.
+3. Assurance specification: each gate's evidence, the evidence schema, the
+   customer-run verifier, the non-retention control tests.
+4. Connector SDK contract including snapshot semantics.
+5. Backlog and validation suite: labelled and adversarial test sets, negative-path tests, load tests.
+
+## Change log
+
+v3 (review of 2026-10-21):
+- Replaced the single "nothing missed" claim with four separate assurances and
+  narrowed the non-retention certificate wording.
+- Added the two-pass model with a consistent source snapshot and drift abort.
+- Replaced count-only reconciliation with a record-level disposition ledger using
+  keyed commitments; added atomic publication and referential checks.
+- Made the assurance detector independent of the transformation detector.
+- Replaced the five-bucket taxonomy with multidimensional classification covering
+  nested data, metadata, business sensitivity, and permissions.
+- Dropped FF3-1 as default, dropped generic Laplace perturbation, dropped salt-as-protection,
+  flagged date-shift sequences as quasi-identifiers.
+- Made k-anonymity and l-diversity release-specific rather than universal.
+- Expanded the non-retention threat model to logs, telemetry, swap, core dumps,
+  egress, connector caches, failed uploads, and hosted import buckets.
+- Added an evidence schema rule against unkeyed identifier hashes and scoped the
+  delivery registry under its own key.
+- Scoped DROP as a separate recurring workflow; narrowed GDPR and ISO claims.
+- Reordered phases so assurance arrives before scale; reference pipeline is a
+  headless service with a CLI.
+- Batch size is adaptive to memory budget.
+
+v2: merged the internal v1 plan with the external roadmap; added portable data
+plane, NER budget, enforceable Gate D, key management, token-consistency policy,
+utility report, delivery registry, licensing gate.
